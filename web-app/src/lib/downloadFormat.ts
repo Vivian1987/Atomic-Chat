@@ -95,7 +95,7 @@ export function downloadStatusLabel(
   }: {
     progress: number
     total: number
-    stage?: { kind: string; attempt: number; maxAttempts: number }
+    stage?: { kind: string; attempt: number; maxAttempts: number; retrySeconds?: number }
     paused?: boolean
   }
 ): string {
@@ -111,14 +111,13 @@ export function downloadStatusLabel(
  */
 export function downloadStageLabel(
   t: (key: string, vars?: Record<string, unknown>) => string,
-  stage?: { kind: string; attempt: number; maxAttempts: number }
+  stage?: { kind: string; attempt: number; maxAttempts: number; retrySeconds?: number }
 ): string | null {
   if (stage?.kind === 'stalled') return t('common:downloadPanel.stalled')
   if (stage?.kind === 'retrying')
-    return t('common:downloadPanel.retrying', {
-      attempt: stage.attempt,
-      maxAttempts: stage.maxAttempts,
-    })
+    return stage.retrySeconds !== undefined && stage.retrySeconds > 0
+      ? t('common:downloadPanel.retryCountdown', { seconds: stage.retrySeconds })
+      : t('common:downloadPanel.retryingNow')
   return null
 }
 
@@ -141,7 +140,7 @@ export function formatDownloadReadout(
     current: number
     total: number
     bytesPerSecond?: number | null
-    stage?: { kind: string; attempt: number; maxAttempts: number }
+    stage?: { kind: string; attempt: number; maxAttempts: number; retrySeconds?: number }
     paused?: boolean
   }
 ): string {
@@ -157,7 +156,11 @@ export function formatDownloadReadout(
   return [
     downloadStatusLabel(t, download),
     stageNote,
-    download.total > 0 && formatProgressPair(download.current, download.total),
+    download.total > 0
+      ? formatProgressPair(download.current, download.total)
+      : download.current > 0
+        ? `${formatBytes(download.current, download.current)} ${bytesUnit(download.current)}`
+        : null,
     eta && t('common:downloadPanel.left', { eta }),
   ]
     .filter(Boolean)
@@ -179,7 +182,7 @@ export function formatDownloadStatusLine(
     current: number
     total: number
     bytesPerSecond?: number | null
-    stage?: { kind: string; attempt: number; maxAttempts: number }
+    stage?: { kind: string; attempt: number; maxAttempts: number; retrySeconds?: number }
     paused?: boolean
   },
   { runningWord = true }: { runningWord?: boolean } = {}

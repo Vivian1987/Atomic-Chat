@@ -22,19 +22,19 @@ vi.mock('@/i18n/react-i18next-compat', () => ({
  * read "Starting…" the entire time.
  */
 describe('DownloadProgressRow status while no bytes have moved', () => {
-  it('says which retry it is on', () => {
+  it('shows the remaining retry delay instead of an attempt limit', () => {
     render(
       <DownloadProgressRow
         id="AtomicChat/some-model"
         progress={0}
         current={0}
         total={0}
-        stage={{ kind: 'retrying', attempt: 2, maxAttempts: 5 }}
+        stage={{ kind: 'retrying', attempt: 6, maxAttempts: 0, retrySeconds: 32 }}
       />
     )
 
     expect(
-      screen.getByText('common:downloadPanel.retrying(attempt=2,maxAttempts=5)')
+      screen.getByText('common:downloadPanel.retryCountdown(seconds=32)')
     ).toBeTruthy()
   })
 
@@ -158,7 +158,8 @@ describe('DownloadProgressRow readout line', () => {
 
     // `truncate` is nowrap plus an ellipsis: a line that cannot fit is cut at
     // its end — the estimate — instead of pushing the card up by a row.
-    expect(screen.getByText(line)).toHaveClass('truncate', 'tabular-nums')
+    const viewport = screen.getByText(line).closest('[title]')
+    expect(viewport).toHaveClass('whitespace-nowrap', 'tabular-nums')
   })
 
   it('leaves the transfer speed out of the row', () => {
@@ -186,7 +187,7 @@ describe('DownloadProgressRow readout line', () => {
 
     const name = screen.getByTitle(transfer.id)
     expect(name).toHaveTextContent('Qwen3-Coder-30B-A3B-Instruct-GGUF')
-    expect(name).toHaveClass('truncate')
+    expect(name).toHaveClass('overflow-hidden')
   })
 
   it('reports the transfer’s own percentage to assistive tech, not a constant', () => {

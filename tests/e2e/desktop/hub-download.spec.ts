@@ -8,15 +8,16 @@
  * on the fixture backend like every other scenario.
  */
 import { createHash } from 'node:crypto'
-import { readdir, readFile, stat } from 'node:fs/promises'
+import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { existsSync } from 'node:fs'
-import { coreSessions, pageShows, send, waitForChat, skipOnboarding } from '../harness/chat.js'
+import { coreSessions, pageShows, send, waitForChatOrSkipSetup as waitForChat } from '../harness/chat.js'
 import { installFakeBackend, startHubFixture, type HubFixture } from '../harness/fixtures.js'
 import { CAN_RUN_FAKE_BACKEND } from '../harness/platform.js'
 import { endSession, startSession, withArtifacts, type Session } from '../harness/session.js'
 import { openSection } from '../harness/navigation.js'
+import { ARTIFACTS_ROOT } from '../harness/artifacts.js'
 
 const MODEL_NAME = 'e2e/hub-fixture-GGUF'
 const QUANT_ID = 'e2e/hub-fixture-Q4_K_M'
@@ -51,7 +52,6 @@ describe.skipIf(!CAN_RUN_FAKE_BACKEND)('downloading a model from the Hub', () =>
       const dataFolder = session.profile.dataFolder
 
       // No model yet, so the app opens on onboarding; the Hub is the way in here.
-      await skipOnboarding(session)
       await waitForChat(session)
       await openSection(browser, 'models')
 
@@ -83,14 +83,17 @@ describe.skipIf(!CAN_RUN_FAKE_BACKEND)('downloading a model from the Hub', () =>
           await new Promise((r) => setTimeout(r, 100))
         }
       })()
-      await download.click()
-      await pageShows(session, 'Download Complete', 120_000)
-      watching = false
-      await watcher
+      try {
+        await download.click()
+        await pageShows(session, 'Download Complete', 120_000)
+      } finally {
+        watching = false
+        await watcher
+      }
 
       // It was seen on its way — a share of the real total, not only the end —
       // and while it ran the user could pause or cancel it.
-      const inFlight = seen.filter((s) => /\b([1-9]\d?)% · \d+ \/ 32 MB/.test(s.status))
+      const inFlight = seen.filter((s) => /\b([1-9]\d?)%/.test(s.status) && /\d+ \/ 32 MB/.test(s.status))
       expect(inFlight.length, `the panel showed: ${JSON.stringify([...new Set(seen.map((s) => s.status))])}`).toBeGreaterThan(0)
       expect(inFlight[0]!.status).toContain(QUANT_ID.split('/')[1])
       expect(inFlight[0]!.controls).toEqual(expect.arrayContaining(['Pause download', 'Cancel download']))
@@ -133,7 +136,7 @@ describe.skipIf(!CAN_RUN_FAKE_BACKEND)('cancelling a Hub download', () => {
     expect(left).toEqual([])
   })
 
-  it('stops the transfer, leaves no model behind, and lets the same model be downloaded again', async () => {
+  it('confirms cancellation, leaves no registered model, and lets the same model be downloaded again', async () => {
     await withArtifacts(session, async () => {
       const browser = session.app.browser
       const modelDir = join(session.profile.dataFolder, 'llamacpp', 'models', ...QUANT_ID.split('/'))
@@ -142,7 +145,6 @@ describe.skipIf(!CAN_RUN_FAKE_BACKEND)('cancelling a Hub download', () => {
           () => (document.querySelector('[role="region"][aria-label="Downloads"]') as HTMLElement | null)?.innerText ?? ''
         )
 
-      await skipOnboarding(session)
       await waitForChat(session)
       await openSection(browser, 'models')
       const card = browser.$(`//*[normalize-space(text())="${TITLE}"]`)
@@ -153,18 +155,22 @@ describe.skipIf(!CAN_RUN_FAKE_BACKEND)('cancelling a Hub download', () => {
       await download.click()
 
       // Part of it has arrived; then the user changes their mind.
-      await expect.poll(panelStatus, { timeout: 60_000, interval: 100 }).toMatch(/\b[1-9]\d?% · /)
+      await expect.poll(panelStatus, { timeout: 60_000, interval: 100 }).toMatch(/\b[1-9]\d?%/)
       await browser.$('[role="region"][aria-label="Downloads"] button[aria-label="Cancel download"]').click()
+      // Cancellation now asks what to do with the partial files before stopping.
+      await browser.$('button=Cancel download and keep files').waitForDisplayed()
+      await browser.$('button=Cancel download and keep files').click()
 
       // The panel goes away, the Hub offers the model again, and no model was
       // registered: nothing the app would list, nothing a load could pick up.
       await expect.poll(panelStatus, { timeout: 30_000 }).toBe('')
-      await download.waitForDisplayed({ timeout: 30_000 })
+      // The confirmation replaces the active control; reacquire its new DOM node.
+      await browser.$('//button[normalize-space(.)="Download"]').waitForClickable({ timeout: 30_000 })
       await expect(stat(join(modelDir, 'model.yml'))).rejects.toThrow()
       expect(await pageShows(session, 'Download Complete', 3_000).then(() => true, () => false)).toBe(false)
 
       // Cancelling left nothing in the way of doing it properly.
-      await download.click()
+      await browser.$('//button[normalize-space(.)="Download"]').click()
       await pageShows(session, 'Download Complete', 120_000)
       expect((await stat(join(modelDir, 'model.gguf'))).size).toBe(hub.modelBytes)
       // The model's description is written a moment after the toast.
@@ -206,7 +212,6 @@ describe.skipIf(!CAN_RUN_FAKE_BACKEND)('pausing a Hub download', () => {
         return sizes.reduce((sum, size) => sum + size, 0)
       }
 
-      await skipOnboarding(session)
       await waitForChat(session)
       await openSection(browser, 'models')
       const card = browser.$(`//*[normalize-space(text())="${TITLE}"]`)
@@ -216,7 +221,7 @@ describe.skipIf(!CAN_RUN_FAKE_BACKEND)('pausing a Hub download', () => {
       await download.waitForClickable({ timeout: 30_000 })
       await download.click()
 
-      await expect.poll(panelStatus, { timeout: 60_000, interval: 100 }).toMatch(/\b[1-9]\d?% · /)
+      await expect.poll(panelStatus, { timeout: 60_000, interval: 100 }).toMatch(/\b[1-9]\d?%/)
       await browser.$(`${panel} button[aria-label="Pause download"]`).click()
 
       // The panel says so and offers to go on; what has arrived stays, and no
@@ -269,7 +274,8 @@ describe.skipIf(!CAN_RUN_FAKE_BACKEND)('a Hub download the server refuses', () =
       `//button[@aria-expanded="false"][.//*[normalize-space(text())="${REFUSED_TITLE}"]]`
     )
     if (await closedRow.isExisting()) await closedRow.click()
-    const download = browser.$('//button[normalize-space(.)="Download"]')
+    // Failed requests remain paused; use the retained request's Resume action.
+    const download = browser.$(`[data-model-row="${REFUSED_MODEL_NAME}"] button[title="Download model"], [data-model-row="${REFUSED_MODEL_NAME}"] button[aria-label="Resume download"]`)
     await download.waitForClickable({ timeout: 30_000 })
     await download.click()
   }
@@ -280,7 +286,6 @@ describe.skipIf(!CAN_RUN_FAKE_BACKEND)('a Hub download the server refuses', () =
     session = await startSession('download-failures', {
       prepare: async (profile) => installFakeBackend(profile),
     })
-    await skipOnboarding(session)
     await waitForChat(session)
   })
 
@@ -348,8 +353,8 @@ describe.skipIf(!CAN_RUN_FAKE_BACKEND)('a Hub download that has to retry', () =>
   let hub: HubFixture
 
   beforeAll(async () => {
-    // The first two answers are a 503: the app's downloader backs off and tries again.
-    hub = await startHubFixture({ modelName: MODEL_NAME, quantId: QUANT_ID, title: TITLE, failFirst: 2 })
+    // The first three GET answers are a 503: the app's downloader backs off and tries again.
+    hub = await startHubFixture({ modelName: MODEL_NAME, quantId: QUANT_ID, title: TITLE, failFirst: 3 })
     session = await startSession('hub-download-retry', {
       prepare: async (profile) => installFakeBackend(profile, { reply: REPLY }),
     })
@@ -365,7 +370,6 @@ describe.skipIf(!CAN_RUN_FAKE_BACKEND)('a Hub download that has to retry', () =>
     await withArtifacts(session, async () => {
       const browser = session.app.browser
       const dataFolder = session.profile.dataFolder
-      await skipOnboarding(session)
       await waitForChat(session)
       await openSection(browser, 'models')
       const card = browser.$(`//*[normalize-space(text())="${TITLE}"]`)
@@ -388,19 +392,31 @@ describe.skipIf(!CAN_RUN_FAKE_BACKEND)('a Hub download that has to retry', () =>
           await new Promise((r) => setTimeout(r, 100))
         }
       })()
-      await download.click()
-      await pageShows(session, 'Download Complete', 180_000)
-      watching = false
-      await watcher
+      try {
+        await download.click()
+        await pageShows(session, 'Download Complete', 180_000)
+      } finally {
+        watching = false
+        await watcher
+      }
 
+      const evidence = join(ARTIFACTS_ROOT, 'download-retry-countdown')
+      await mkdir(evidence, { recursive: true })
+      await writeFile(join(evidence, 'statuses.json'), JSON.stringify(statuses, null, 2))
       // The retry was said, as its own line, not as progress going backwards.
-      const retrying = statuses.filter((status) => /Connection failed, retrying \(\d+\/\d+\)/.test(status))
+      const retrying = statuses.filter((status) => /Retrying in \d+s/.test(status))
       expect(retrying.length, `the panel showed: ${JSON.stringify([...new Set(statuses)])}`).toBeGreaterThan(0)
-      // And the file arrived whole, from the third answer on.
+      const retryAttempt = statuses.findIndex((status) => /Retrying…/.test(status))
+      expect(retryAttempt).toBeGreaterThanOrEqual(0)
+      expect(statuses.slice(retryAttempt + 1).some((status) => /Retrying in 3s/.test(status))).toBe(true)
+      expect(statuses.some((status) => /Retrying in 2s/.test(status))).toBe(true)
+      expect(statuses.some((status) => /Retrying in 1s/.test(status))).toBe(true)
+      expect(retrying.every((status) => !/\(\d+\/5\)/.test(status))).toBe(true)
+      // And the file arrived whole, after the third failed GET.
       const modelDir = join(dataFolder, 'llamacpp', 'models', ...QUANT_ID.split('/'))
       expect((await stat(join(modelDir, 'model.gguf'))).size).toBe(hub.modelBytes)
       const fileRequests = hub.requests().filter((r) => r.path === '/model.gguf' && r.method === 'GET')
-      expect(fileRequests.length).toBeGreaterThanOrEqual(3)
+      expect(fileRequests.length).toBeGreaterThanOrEqual(4)
     })
   }, 300_000)
 })

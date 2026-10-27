@@ -89,7 +89,11 @@ pub struct DownloadStage {
     /// `"stalled"` when an open transfer has stopped delivering bytes.
     pub kind: &'static str,
     pub attempt: u32,
+    /// Zero means transport retries remain active until the user stops the task.
     pub max_attempts: u32,
+    /// Actual backoff duration, not an attempt-derived UI estimate.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_after_ms: Option<u64>,
 }
 
 impl DownloadStage {
